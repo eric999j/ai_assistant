@@ -1,0 +1,56 @@
+# pre-commit hooks 設定
+# 安裝: pip install pre-commit && python -m pre_commit install && python -m pre_commit install --hook-type pre-push
+# 手動觸發全部: python -m pre_commit run --all-files
+
+repos:
+  # ── 基本程式碼衛生 ──
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: debug-statements
+        language_version: python3
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      # ── 機密 regex 掃描 ──
+      - id: secret-pattern-check
+        name: 機密模式掃描
+        entry: python scripts/check_secrets.py
+        language: python
+        types: [text]
+        exclude: '\.pre-commit-config\.yaml$'
+
+      # ── Bandit 靜態安全掃描（僅中高嚴重度）──
+      - id: bandit-check
+        name: Bandit 安全掃描
+        entry: bandit -ll -q
+        language: python
+        types: [python]
+        additional_dependencies: ['bandit']
+        exclude: '^tests/|^scripts/'
+
+      # ── pytest 快速測試（pre-push）──
+      - id: pytest-quick
+        name: 快速單元測試
+        entry: python -m pytest tests/ -x -q --tb=short
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      # ── 依賴 CVE 掃描（pre-push）──
+      - id: pip-audit-check
+        name: 依賴套件 CVE 掃描
+        entry: python scripts/pre_push_audit.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -1,0 +1,6 @@
+pixel_config.json
+__pycache__/
+*.pyc
+temp_speech.mp3
+temp_speech.txt
+.pytest_cache/

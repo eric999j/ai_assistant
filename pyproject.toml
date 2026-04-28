@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixel-assistant"
+version = "0.2.0"
+description = "Minimal desktop AI assistant with pixel-art Game of Life visualization."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "eric.lu" }]
+dependencies = [
+    "google-generativeai==0.8.6",
+    "SpeechRecognition==3.14.3",
+    "edge-tts==7.2.7",
+    "pyperclip==1.9.0",
+    "pygame==2.6.1",
+    "PyAudio==0.2.14",
+    "pillow>=12.1.1",
+    "requests>=2.31.0",
+    "keyring>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.0.3",
+    "ruff>=0.6.0",
+    "pip-audit>=2.7.0",
+    "bandit>=1.7.0",
+]
+
+[project.scripts]
+pixel-assistant = "run_assistant:main"
+
+[tool.setuptools]
+packages = ["pixel_assistant_app"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [".venv", "build", "dist", "reports"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "S",   # bandit-style security checks
+    "SIM", # simplify
+]
+ignore = [
+    "E501",  # line too long (delegated to formatter)
+    "S101",  # use of assert in tests
+    "S311",  # pseudo-random for non-crypto game animation
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B"]
+"scripts/**" = ["S"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
