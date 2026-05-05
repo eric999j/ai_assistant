@@ -27,7 +27,7 @@ from .config import (
 from .dialogs import ask_text_command, edit_welcome_message, open_quick_command_editor
 from .enums import Action, Mode
 from .game_of_life import GameOfLife
-from .paths import temp_speech_mp3, temp_speech_text
+from .paths import temp_speech_mp3, temp_speech_text, write_temp_speech_text
 
 # 說話模式時的閃爍週期（毫秒）
 SPEAKING_FLICKER_INTERVAL_MS = 200
@@ -224,8 +224,7 @@ class PixelAssistantUI:
 
     def save_bubble_text(self, text):
         try:
-            with open(temp_speech_text(), "w", encoding="utf-8") as f:
-                f.write(text)
+            write_temp_speech_text(text)
         except Exception as e:
             self.logger.error("Failed to save bubble text: %s", e)
 

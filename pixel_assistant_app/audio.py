@@ -8,7 +8,7 @@ import time
 
 import edge_tts
 
-from .paths import temp_speech_mp3, temp_speech_text
+from .paths import sync_temp_speech_mp3, temp_speech_mp3, write_temp_speech_text
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +43,11 @@ class AudioHandler:
     async def play_tts(self, text: str, voice: str = "zh-TW-HsiaoChenNeural") -> None:
         """使用 Edge-TTS 串流生成並播放語音"""
         self._cancel_requested = False
-        text_file = temp_speech_text()
 
         try:
             # 保存文字內容到本地文件
             try:
-                with open(text_file, "w", encoding="utf-8") as f:
-                    f.write(text)
+                write_temp_speech_text(text)
             except Exception as save_err:
                 logger.warning("Failed to save text: %s", save_err)
 
@@ -95,6 +93,8 @@ class AudioHandler:
                         except (BrokenPipeError, OSError):
                             break
 
+            sync_temp_speech_mp3()
+
             # 關閉 stdin 讓 mpv 知道資料結束
             if proc.stdin:
                 try:
@@ -122,6 +122,7 @@ class AudioHandler:
 
         communicate = edge_tts.Communicate(text, voice)
         await communicate.save(output_file)
+        sync_temp_speech_mp3()
 
         if self._cancel_requested:
             return

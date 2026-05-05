@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 
@@ -31,9 +32,39 @@ def log_dir() -> Path:
     return d
 
 
+def project_root() -> Path:
+    env = os.environ.get("PIXEL_ASSISTANT_PROJECT_ROOT")
+    if env:
+        return Path(env).expanduser()
+    return Path(__file__).resolve().parents[1]
+
+
+def project_temp_speech_mp3() -> str:
+    return str(project_root() / "temp_speech.mp3")
+
+
+def project_temp_speech_text() -> str:
+    return str(project_root() / "temp_speech.txt")
+
+
 def temp_speech_mp3() -> str:
     return str(cache_dir() / "temp_speech.mp3")
 
 
 def temp_speech_text() -> str:
     return str(cache_dir() / "temp_speech.txt")
+
+
+def write_temp_speech_text(text: str) -> None:
+    cache_path = Path(temp_speech_text())
+    project_path = Path(project_temp_speech_text())
+    cache_path.write_text(text, encoding="utf-8")
+    shutil.copyfile(cache_path, project_path)
+
+
+def sync_temp_speech_mp3() -> None:
+    cache_path = Path(temp_speech_mp3())
+    project_path = Path(project_temp_speech_mp3())
+    if not cache_path.exists():
+        return
+    shutil.copyfile(cache_path, project_path)
