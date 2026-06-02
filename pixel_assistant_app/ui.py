@@ -67,6 +67,9 @@ class PixelAssistantUI:
         self._last_alive_cells = set()
         self._last_alive_color = None
         self._force_full_redraw = True
+        self._bubble_after_id = None
+        self._tts_lock = threading.Lock()
+        self._tts_job_id = 0
         # SPEAKING 模式下用 time-based 切換顏色，避免每幀亂數
         self._speaking_alt_color = False
         self._speaking_last_toggle = 0.0
@@ -201,14 +204,18 @@ class PixelAssistantUI:
     def update_bubble_position(self):
         if self.bubble.winfo_viewable():
             self.bubble.update_idletasks()
-            x = self.root.winfo_x() + self.root.winfo_width() + 5
-            y = self.root.winfo_y()
+            root_x = self.root.winfo_x()
+            root_y = self.root.winfo_y()
+            x = root_x + self.root.winfo_width() + 8
+            y = root_y
             screen_w = self.root.winfo_screenwidth()
             screen_h = self.root.winfo_screenheight()
             bubble_w = self.bubble.winfo_width()
             bubble_h = self.bubble.winfo_height()
-            x = min(x, screen_w - bubble_w - 5)
-            y = min(y, screen_h - bubble_h - 5)
+            if x + bubble_w > screen_w - 8:
+                x = root_x - bubble_w - 8
+            x = max(8, min(x, screen_w - bubble_w - 8))
+            y = max(8, min(y, screen_h - bubble_h - 8))
             self.bubble.geometry(f"+{x}+{y}")
 
     def position_window_bottom_right(self):
@@ -238,16 +245,35 @@ class PixelAssistantUI:
             self.logger.error("Failed to load bubble text: %s", e)
         return None
 
+    def _cancel_bubble_timer(self):
+        if not self._bubble_after_id:
+            return
+        try:
+            self.root.after_cancel(self._bubble_after_id)
+        except Exception as e:
+            self.logger.debug("Bubble timer was already unavailable: %s", e)
+        self._bubble_after_id = None
+
     def show_message(self, text, duration=None):
         if duration is None:
             duration = self.config_manager.get("bubble_duration", 5000)
+        self._cancel_bubble_timer()
         self.bubble_label.config(text=text)
         self.bubble.deiconify()
         self.update_bubble_position()
         self.save_bubble_text(text)
-        self.root.after(duration, self.bubble.withdraw)
+        self._bubble_after_id = self.root.after(duration, self._hide_bubble)
+
+    def _hide_bubble(self):
+        self._bubble_after_id = None
+        self.bubble.withdraw()
 
     def setup_context_menu(self):
+        if hasattr(self, "menu"):
+            try:
+                self.menu.destroy()
+            except Exception as e:
+                self.logger.debug("Previous context menu was already unavailable: %s", e)
         self.menu = Menu(self.root, tearoff=0)
         quick_menu = Menu(self.menu, tearoff=0)
         quick_commands = self.config_manager.get("quick_commands", [])
@@ -262,6 +288,7 @@ class PixelAssistantUI:
         quick_menu.add_command(label="✏️ 編輯指令...", command=self.open_quick_command_editor)
         self.menu.add_cascade(label="⚡ 快速指令", menu=quick_menu)
         self.menu.add_command(label="⌨️ 輸入指令", command=self.input_text_command)
+        self.menu.add_command(label="📋 分析剪貼簿", command=self.analyze_clipboard)
         self.menu.add_command(label="🔁 回放上次語音", command=self.replay_local_audio)
         self.menu.add_command(label="🔄 重置形象", command=self.spawn_creature)
         self.menu.add_separator()
@@ -355,7 +382,9 @@ class PixelAssistantUI:
         if hasattr(self, "audio_handler"):
             self.audio_handler.stop()
         if hasattr(self, "bubble"):
+            self._cancel_bubble_timer()
             self.bubble.withdraw()
+        self._force_full_redraw = True
         self.game.spawn_creature()
 
     def game_of_life_step(self):
@@ -396,8 +425,6 @@ class PixelAssistantUI:
     def update_loop(self):
         if self.mode == Mode.IDLE:
             self.game_of_life_step()
-            if self.game.get_cell_count() == 0:
-                self.spawn_creature()
         elif self.mode == Mode.THINKING:
             self.game.spawn_creature()
 
@@ -557,14 +584,20 @@ class PixelAssistantUI:
         threading.Thread(target=_background_analysis, daemon=True).start()
 
     def run_async_tts(self, text):
+        with self._tts_lock:
+            self._tts_job_id += 1
+            job_id = self._tts_job_id
+
         def run():
-            self.mode = Mode.SPEAKING
+            self._enqueue(Action.SET_MODE, mode=Mode.SPEAKING.value)
             try:
                 asyncio.run(self.audio_handler.play_tts(text, self.voice_id))
             except Exception as e:
                 self.logger.error("TTS error: %s", e)
             finally:
-                self.mode = Mode.IDLE
+                with self._tts_lock:
+                    if job_id == self._tts_job_id:
+                        self._enqueue(Action.SET_MODE, mode=Mode.IDLE.value)
         threading.Thread(target=run, daemon=True).start()
 
     def handle_ai_response(self, prompt, image=None):

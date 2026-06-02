@@ -103,6 +103,51 @@ def test_respawn_on_all_dead(ui_instance):
     assert ui_instance.game.get_cell_count() > 0, "Expected respawn to create new cells when all died"
 
 
+def test_context_menu_includes_clipboard_analysis(ui_instance):
+    """Test that the documented clipboard analysis command is available."""
+    labels = [
+        ui_instance.menu.entrycget(i, "label")
+        for i in range(ui_instance.menu.index(tk.END) + 1)
+        if ui_instance.menu.type(i) == "command"
+    ]
+
+    assert "📋 分析剪貼簿" in labels
+
+
+def test_show_message_cancels_previous_hide_timer(ui_instance):
+    """Test that a newer message is not hidden by an older after callback."""
+    root = ui_instance.root
+    calls = []
+    cancelled = []
+    callbacks = {}
+
+    def fake_after(delay, callback=None, *args):
+        calls.append(delay)
+        after_id = f"after-{len(calls)}"
+        callbacks[after_id] = callback
+        return after_id
+
+    def fake_after_cancel(after_id):
+        cancelled.append(after_id)
+        callbacks.pop(after_id, None)
+
+    original_after = root.after
+    original_after_cancel = root.after_cancel
+    root.after = fake_after
+    root.after_cancel = fake_after_cancel
+    try:
+        ui_instance.show_message("first", duration=1000)
+        first_id = ui_instance._bubble_after_id
+        ui_instance.show_message("second", duration=2000)
+    finally:
+        root.after = original_after
+        root.after_cancel = original_after_cancel
+
+    assert first_id in cancelled
+    assert calls == [1000, 2000]
+    assert ui_instance.bubble_label.cget("text") == "second"
+
+
 def test_double_click_exits_when_clicking_alive_cell(ui_instance):
     """Test that double-clicking an alive cell triggers quit."""
     from pixel_assistant_app.config import CELL_SIZE
