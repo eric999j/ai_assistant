@@ -3,6 +3,7 @@ Game of Life 邏輯模組
 分離遊戲邏輯與 UI，提高可維護性和可測試性
 """
 import random
+from collections import defaultdict
 
 
 class GameOfLife:
@@ -46,36 +47,26 @@ class GameOfLife:
         Returns:
             bool: 如果所有細胞死亡返回 False，否則返回 True
         """
-        neighbor_counts = {}
-
-        # 計算每個位置的鄰居數量
+        neighbor_counts: dict[tuple[int, int], int] = defaultdict(int)
+        gw, gh = self.grid_width, self.grid_height
+        # 邊界循環用 % gw/gh 實現環狀網格
         for (x, y) in self.cells:
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
                     if dx == 0 and dy == 0:
                         continue
-                    # 使用模運算實現邊界循環
-                    nx = (x + dx) % self.grid_width
-                    ny = (y + dy) % self.grid_height
-                    neighbor_counts[(nx, ny)] = neighbor_counts.get((nx, ny), 0) + 1
+                    neighbor_counts[((x + dx) % gw, (y + dy) % gh)] += 1
 
-        # 應用 Game of Life 規則
-        new_cells = set()
-        for pos, count in neighbor_counts.items():
-            # 規則：
-            # 1. 任何活細胞周圍有 2 或 3 個活鄰居時存活
-            # 2. 任何死細胞周圍恰好有 3 個活鄰居時復活
-            if count == 3 or (count == 2 and pos in self.cells):
-                new_cells.add(pos)
+        # 規則：活細胞需 2 或 3 個鄰居才存活；死細胞恰好 3 個鄰居則復活
+        cells = self.cells
+        new_cells = {
+            pos
+            for pos, count in neighbor_counts.items()
+            if count == 3 or (count == 2 and pos in cells)
+        }
 
-        # 更新細胞狀態
         self.cells = new_cells
-
-        # 如果所有細胞死亡，返回 False
-        if not new_cells:
-            return False
-
-        return True
+        return bool(new_cells)
 
     def get_cells(self) -> set:
         """

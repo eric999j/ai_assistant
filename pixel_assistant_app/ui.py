@@ -31,6 +31,15 @@ from .paths import temp_speech_mp3, temp_speech_text, write_temp_speech_text
 
 # 說話模式時的閃爍週期（毫秒）
 SPEAKING_FLICKER_INTERVAL_MS = 200
+# 思考模式呼吸週期（毫秒）
+THINKING_BREATH_MS = 1200
+# 思考模式重生像素圖的間隔（毫秒），取代原每 50ms 高頻閃爍
+THINKING_RESPAWN_MS = 320
+# 聆聽模式的提示色（暖黃）
+LISTENING_HINT_COLOR = "#FFD54A"
+# 氣泡被點擊複製時的閃綠回饋
+BUBBLE_FLASH_COPIED_BG = "#2b7a2b"
+BUBBLE_FLASH_MS = 220
 # UI 訊息佇列的虛擬事件名稱
 QUEUE_EVENT = "<<PixelMsg>>"
 
@@ -53,6 +62,10 @@ class PixelAssistantUI:
         self.theme_var = tk.StringVar(value=self.theme_name)
         self.voice_var = tk.StringVar(value=self.voice_id)
         self.model_var = tk.StringVar(value=self.model_name or "Auto")
+        # 讓音量/回覆字數/氣泡秒數也能從右鍵選單快速切換
+        self.volume_var = tk.DoubleVar(value=float(self.config_manager.get("volume", 1.0)))
+        self.reply_chars_var = tk.IntVar(value=int(self.config_manager.get("max_reply_chars", 200)))
+        self.bubble_duration_var = tk.IntVar(value=int(self.config_manager.get("bubble_duration", 5000)))
 
         # 初始化 Game of Life
         self.game = GameOfLife(GRID_W, GRID_H)
@@ -73,6 +86,10 @@ class PixelAssistantUI:
         # SPEAKING 模式下用 time-based 切換顏色，避免每幀亂數
         self._speaking_alt_color = False
         self._speaking_last_toggle = 0.0
+        # THINKING 模式改為 time-based 呼吸 + 低頻 respawn
+        self._thinking_last_spawn = 0.0
+        # 氣泡點擊複製的閃綠回饋 timer id
+        self._copy_flash_after_id = None
 
         # AI
         self.api_key = self.config_manager.get("api_key", "") or os.environ.get("GEMINI_API_KEY", "")
@@ -117,6 +134,8 @@ class PixelAssistantUI:
 
         # 訊息佇列：改用 virtual event，由 worker thread 透過 event_generate 喚醒
         self.root.bind(QUEUE_EVENT, lambda _e: self.process_queue())
+        # Escape 快速隱藏氣泡
+        self.root.bind("<Escape>", lambda _e: self._hide_bubble())
 
         self.spawn_creature()
         try:
@@ -139,6 +158,7 @@ class PixelAssistantUI:
         try:
             self.init_brain()
             self._enqueue(Action.SPEAK, text="AI 模型已更新")
+            return
         except Exception as e:
             self.logger.error("Failed to reload brain: %s", e)
             msg = f"模型切換失敗: {str(e)}"
@@ -146,7 +166,23 @@ class PixelAssistantUI:
                 msg = f"模型 {self.model_name} 無法使用或不存在\n請切換其他模型"
             self._enqueue(Action.SPEAK, text="模型切換失敗")
             self._enqueue(Action.SHOW_ERROR, text=msg)
-            self.root.after(0, lambda: self.change_model(""))
+
+        # 失敗後回到 Auto 並重試一次（只在不是 Auto 未完成前），避免無限回圈
+        previous_target = self.model_name
+        self.model_name = ""
+        self.config_manager.set("ai_model", "")
+        # 回到主執行緒更新選單顯示狀態
+        self.root.after(0, lambda: self.model_var.set("Auto"))
+
+        if not previous_target:
+            return
+
+        try:
+            self.init_brain()
+            self._enqueue(Action.SPEAK, text="已回到自動選擇模型")
+        except Exception as e:
+            self.logger.error("Auto fallback also failed: %s", e)
+            self._enqueue(Action.SHOW_ERROR, text=f"自動選擇模型也失敗：{e}")
 
     def ask_api_key(self):
         key = simpledialog.askstring("API Key", "請輸入 Google Gemini API Key:", parent=self.root)
@@ -196,10 +232,47 @@ class PixelAssistantUI:
         self.bubble.configure(bg="#333333")
         self.bubble_label = tk.Label(
             self.bubble, text="", fg="white", bg="#333333",
-            font=("Arial", 10), wraplength=500, justify="left", padx=10, pady=5
+            font=("Arial", 10), wraplength=500, justify="left", padx=10, pady=5,
+            cursor="hand2",
         )
         self.bubble_label.pack()
+        # 點擊氣泡文字將內容複製到剪貼簿（方便使用者抓走 AI 回覆）
+        self.bubble_label.bind("<Button-1>", self._on_bubble_click)
         self.bubble.withdraw()
+
+    def _on_bubble_click(self, _event=None):
+        text = self.bubble_label.cget("text")
+        if not text:
+            return
+        try:
+            pyperclip.copy(text)
+        except Exception as e:
+            self.logger.debug("copy bubble text failed: %s", e)
+            return
+        prev_label_bg = self.bubble_label.cget("bg")
+        prev_bubble_bg = self.bubble.cget("bg")
+        try:
+            self.bubble_label.config(bg=BUBBLE_FLASH_COPIED_BG)
+            self.bubble.configure(bg=BUBBLE_FLASH_COPIED_BG)
+        except Exception:
+            return
+        if self._copy_flash_after_id:
+            try:
+                self.root.after_cancel(self._copy_flash_after_id)
+            except Exception:
+                pass
+        self._copy_flash_after_id = self.root.after(
+            BUBBLE_FLASH_MS,
+            lambda: self._restore_bubble_bg(prev_label_bg, prev_bubble_bg),
+        )
+
+    def _restore_bubble_bg(self, label_bg: str, bubble_bg: str) -> None:
+        self._copy_flash_after_id = None
+        try:
+            self.bubble_label.config(bg=label_bg)
+            self.bubble.configure(bg=bubble_bg)
+        except Exception:
+            pass
 
     def update_bubble_position(self):
         if self.bubble.winfo_viewable():
@@ -321,6 +394,31 @@ class PixelAssistantUI:
                 command=lambda: self.change_voice(self.voice_var.get())
             )
         self.menu.add_cascade(label="🗣️ 切換語音", menu=voice_menu)
+
+        volume_menu = Menu(self.menu, tearoff=0)
+        for label, value in (("靜音", 0.0), ("25%", 0.25), ("50%", 0.5), ("75%", 0.75), ("100%", 1.0)):
+            volume_menu.add_radiobutton(
+                label=label, variable=self.volume_var, value=value,
+                command=lambda v=value: self.change_volume(v),
+            )
+        self.menu.add_cascade(label="🔊 音量", menu=volume_menu)
+
+        reply_menu = Menu(self.menu, tearoff=0)
+        for label, value in (("簡短 (50 字)", 50), ("適中 (100 字)", 100), ("完整 (200 字)", 200), ("詳細 (400 字)", 400)):
+            reply_menu.add_radiobutton(
+                label=label, variable=self.reply_chars_var, value=value,
+                command=lambda v=value: self.change_max_reply_chars(v),
+            )
+        self.menu.add_cascade(label="✍️ 回覆字數上限", menu=reply_menu)
+
+        bubble_menu = Menu(self.menu, tearoff=0)
+        for label, value in (("3 秒", 3000), ("5 秒", 5000), ("8 秒", 8000), ("12 秒", 12000)):
+            bubble_menu.add_radiobutton(
+                label=label, variable=self.bubble_duration_var, value=value,
+                command=lambda v=value: self.change_bubble_duration(v),
+            )
+        self.menu.add_cascade(label="⏱️ 氣泡顯示時間", menu=bubble_menu)
+
         self.menu.add_command(label="🔑 設定 API Key", command=self.ask_api_key)
         self.menu.add_command(label="✏️ 編輯歡迎訊息", command=self.edit_welcome_message)
         self.menu.add_separator()
@@ -361,12 +459,45 @@ class PixelAssistantUI:
         except Exception as e:
             self.logger.error("Failed to play demo with new voice: %s", e)
 
+    def change_volume(self, volume: float):
+        volume = max(0.0, min(1.0, float(volume)))
+        self.volume_var.set(volume)
+        self.config_manager.set("volume", volume)
+        try:
+            self.audio_handler.volume = volume
+        except Exception as e:
+            self.logger.debug("Failed to apply volume live: %s", e)
+        self.show_message(f"音量：{int(volume * 100)}%", 2000)
+
+    def change_max_reply_chars(self, chars: int):
+        chars = max(20, min(2000, int(chars)))
+        self.reply_chars_var.set(chars)
+        self.max_reply_chars = chars
+        self.config_manager.set("max_reply_chars", chars)
+        self.show_message(f"回覆字數上限：{chars}", 2000)
+        # 重新初始化 brain 讓新的字數上限套用到 system prompt 與 generation_config
+        threading.Thread(target=self._reload_brain, daemon=True).start()
+
+    def change_bubble_duration(self, ms: int):
+        ms = max(1000, min(30000, int(ms)))
+        self.bubble_duration_var.set(ms)
+        self.bubble_duration = ms
+        self.config_manager.set("bubble_duration", ms)
+        self.show_message(f"氣泡顯示：{ms // 1000} 秒", 2000)
+
     # ---------------- 視窗拖曳 ----------------
     def start_move(self, event):
         self.x = event.x
         self.y = event.y
 
     def move_window(self, event):
+        # 一旦偵測到拖曳，就取消待執行的單擊，避免拖完誤觸語音聆聽
+        if self._single_click_after_id:
+            try:
+                self.root.after_cancel(self._single_click_after_id)
+            except Exception:
+                pass
+            self._single_click_after_id = None
         deltax = event.x - self.x
         deltay = event.y - self.y
         x = self.root.winfo_x() + deltax
@@ -393,14 +524,38 @@ class PixelAssistantUI:
             self.spawn_creature()
 
     def _current_alive_color(self) -> str:
-        """SPEAKING 模式下以固定間隔切換顏色，其餘維持主題色。"""
-        if self.mode != Mode.SPEAKING:
-            return self.colors["alive"]
-        now = time.monotonic() * 1000
-        if now - self._speaking_last_toggle >= SPEAKING_FLICKER_INTERVAL_MS:
-            self._speaking_alt_color = not self._speaking_alt_color
-            self._speaking_last_toggle = now
-        return "#FFFFFF" if self._speaking_alt_color else self.colors["alive"]
+        """依模式決定像素顏色：SPEAKING 閃、THINKING 呼吸、LISTENING 提示。"""
+        base = self.colors["alive"]
+        if self.mode == Mode.SPEAKING:
+            now = time.monotonic() * 1000
+            if now - self._speaking_last_toggle >= SPEAKING_FLICKER_INTERVAL_MS:
+                self._speaking_alt_color = not self._speaking_alt_color
+                self._speaking_last_toggle = now
+            return "#FFFFFF" if self._speaking_alt_color else base
+        if self.mode == Mode.THINKING:
+            return self._thinking_breath_color(base)
+        if self.mode == Mode.LISTENING:
+            return LISTENING_HINT_COLOR
+        return base
+
+    def _thinking_breath_color(self, base_hex: str) -> str:
+        """以三角波做呼吸效果（避免匯入 math），讓思考中的畫面柔和不刺眼。"""
+        now_ms = time.monotonic() * 1000
+        t = (now_ms % THINKING_BREATH_MS) / THINKING_BREATH_MS  # 0..1
+        tri = 1.0 - abs(2.0 * t - 1.0)  # 0..1..0
+        intensity = 0.35 + 0.65 * tri
+        return self._blend_with_black(base_hex, intensity)
+
+    @staticmethod
+    def _blend_with_black(hex_color: str, intensity: float) -> str:
+        h = hex_color.lstrip("#")
+        if len(h) != 6:
+            return hex_color
+        intensity = max(0.0, min(1.0, intensity))
+        r = int(int(h[0:2], 16) * intensity)
+        g = int(int(h[2:4], 16) * intensity)
+        b = int(int(h[4:6], 16) * intensity)
+        return f"#{r:02X}{g:02X}{b:02X}"
 
     def draw_grid(self):
         alive_cells = self.game.get_cells()
@@ -426,13 +581,15 @@ class PixelAssistantUI:
         if self.mode == Mode.IDLE:
             self.game_of_life_step()
         elif self.mode == Mode.THINKING:
-            self.game.spawn_creature()
+            now_ms = time.monotonic() * 1000
+            # 以低頻 spawn 代替原本每幀 respawn，避免頻繁全圖重畫並降 CPU
+            if now_ms - self._thinking_last_spawn >= THINKING_RESPAWN_MS:
+                self.game.spawn_creature()
+                self._thinking_last_spawn = now_ms
 
         self.draw_grid()
 
         delay = 1000 // FPS
-        if self.mode == Mode.THINKING:
-            delay = 50
         self.root.after(delay, self.update_loop)
 
     # ---------------- 訊息佇列（virtual event 驅動） ----------------
@@ -448,22 +605,32 @@ class PixelAssistantUI:
             pass
 
     def process_queue(self):
-        try:
-            while True:
+        while True:
+            try:
                 task = self.msg_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
                 action = task.get("action")
                 if action == Action.SHOW_TEXT.value:
                     self.show_message(task["text"])
                 elif action == Action.SET_MODE.value:
                     raw = task["mode"]
                     self.mode = raw if isinstance(raw, Mode) else Mode(raw)
+                    if self.mode == Mode.THINKING:
+                        # 進入 THINKING 時重置 spawn 時間戳，確保畫面立刻變圖
+                        self._thinking_last_spawn = 0.0
                 elif action == Action.SPEAK.value:
                     self.run_async_tts(task["text"])
                 elif action == Action.SHOW_ERROR.value:
                     self.show_error(task.get("text", "Error"))
-                self.msg_queue.task_done()
-        except queue.Empty:
-            pass
+            except Exception as e:
+                self.logger.error("process_queue error on task %r: %s", task, e)
+            finally:
+                try:
+                    self.msg_queue.task_done()
+                except Exception:
+                    pass
 
     def show_error(self, text, duration=10000):
         try:
@@ -528,6 +695,9 @@ class PixelAssistantUI:
                 return
 
             clipboard = pyperclip.paste()
+            if "{clipboard}" in prompt_template and not clipboard.strip():
+                self._enqueue(Action.SHOW_TEXT, text="剪貼簿為空，無法執行這條快速指令")
+                return
             prompt = prompt_template.replace("{clipboard}", clipboard)
             if not prompt.strip():
                 self._enqueue(Action.SHOW_TEXT, text="快速指令內容為空")

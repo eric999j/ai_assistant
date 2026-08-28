@@ -34,7 +34,9 @@ class AIBrain:
         try:
             genai.configure(api_key=self.api_key)
 
-            model_name = "gemini-1.5-flash" # 預設値
+            # 預設値取自 MODEL_PREFERENCES 首選（避免 hardcode 已棄用型號）
+            default_model = MODEL_PREFERENCES[0] if MODEL_PREFERENCES else "models/gemini-2.5-flash"
+            model_name = default_model
 
             if self.target_model_name:
                 model_name = self.target_model_name
@@ -101,30 +103,25 @@ class AIBrain:
 
             logger.info("已選擇模型: %s", model_name)
 
-            # 嘗試啟用 Google 搜尋 (Grounding)
-            try:
-                if "gemini" in model_name:
-                    # 嘗試使用字典格式啟用 Google 搜尋
-                    try:
-                        tools = [{'google_search': {}}]
-                        self.model = genai.GenerativeModel(model_name, tools=tools)
-                        logger.info("已啟用 Google 搜尋功能 (Grounding)")
-                    except Exception as e:
-                        logger.warning("啟用搜尋失敗 (Dict): %s", e)
-                        # 備用方案：不使用工具
-                        self.model = genai.GenerativeModel(model_name)
-                else:
-                    self.model = genai.GenerativeModel(model_name)
-            except Exception as tool_err:
-                logger.warning("啟用搜尋失敗，使用普通模式: %s", tool_err)
-                self.model = genai.GenerativeModel(model_name)
-
-            current_date = time.strftime("%Y年%m月%d日")
-            # 使用者可配置的最大回覆字數，插入到系統提示中
+            # 使用者可配置的最大回覆字數，計算 max_output_tokens 上限
             try:
                 max_chars = int(self.max_reply_chars)
             except Exception:
                 max_chars = 50
+            # 中文 1 char ≈ 1~2 tokens，保守給 4x，並夾在 [128, 2048] 之間
+            max_out_tokens = max(128, min(2048, max_chars * 4))
+
+            gen_config = {
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "max_output_tokens": max_out_tokens,
+            }
+
+            use_search = "gemini" in model_name
+            tools = [{"google_search": {}}] if use_search else None
+            self.model = self._build_model(model_name, tools=tools, gen_config=gen_config)
+
+            current_date = time.strftime("%Y年%m月%d日")
 
             self.chat = self.model.start_chat(history=[
                 {"role": "user", "parts": [
@@ -136,6 +133,36 @@ class AIBrain:
         except Exception as e:
             logger.error("AI Setup Error: %s", e)
             raise
+
+    def _build_model(self, name: str, tools, gen_config):
+        """依序嘗試 (tools + generation_config) → (tools) → 基本建構，
+        以兼容不同版本的 google-generativeai SDK 與測試 mock。
+        """
+        attempts: list[dict] = [{"tools": tools, "generation_config": gen_config}]
+        if tools:
+            attempts.append({"tools": tools})
+        attempts.append({})
+
+        last_err: Exception | None = None
+        for kwargs in attempts:
+            try:
+                model = genai.GenerativeModel(name, **kwargs)
+                if kwargs.get("tools"):
+                    logger.info("已啟用 Google 搜尋 (Grounding)")
+                if "generation_config" in kwargs:
+                    logger.info("已套用 generation_config: %s", gen_config)
+                return model
+            except TypeError as e:
+                # 舊 SDK 或測試 mock 不支援某些關鍵字，嘗試下一組
+                last_err = e
+                continue
+            except Exception as e:
+                last_err = e
+                logger.warning("建立模型失敗 (%s)：%s", list(kwargs.keys()), e)
+                continue
+        if last_err:
+            raise last_err
+        raise RuntimeError("無法建立 GenerativeModel")
 
     def ask(self, prompt, image=None, timeout: int = 60):
         if not self.chat:
@@ -158,6 +185,6 @@ class AIBrain:
 
         # Gemini 在 SAFETY 等結束原因時 response.text 可能為 None
         if not response.text:
-            return "(我無法回應這個問題，可能被內容安全策略拖底)"
+            return "(我無法回應這個問題，可能被內容安全策略攔截，請換個問法再試。)"
 
         return response.text
